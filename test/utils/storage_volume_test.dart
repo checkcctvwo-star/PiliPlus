@@ -20,7 +20,9 @@ void main() {
       'availableBytes': 12100000000,
     });
     expect(v.path, '/storage/XXXX-XXXX');
+    expect(v.name, 'SD 卡');
     expect(v.isRemovable, true);
     expect(v.totalBytes, 64000000000);
+    expect(v.availableBytes, 12100000000);
   });
 }
