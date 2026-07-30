@@ -862,7 +862,9 @@ void _showAndroidStoragePicker(BuildContext context, VoidCallback setState) asyn
         break;
     }
 
-    await Get.find<DownloadService>().initDownloadList();
+    final downloadService = Get.find<DownloadService>();
+    downloadService.initDownloadList();
+    await downloadService.waitForInitialization;
     setState();
   } catch (e) {
     SmartDialog.showToast('操作失败: $e');
