@@ -41,6 +41,10 @@ import 'package:PiliPlus/utils/platform_utils.dart';
 import 'package:PiliPlus/utils/storage.dart';
 import 'package:PiliPlus/utils/storage_key.dart';
 import 'package:PiliPlus/utils/storage_pref.dart';
+import 'package:PiliPlus/utils/migration_decision.dart';
+import 'package:PiliPlus/utils/storage_location.dart';
+import 'package:PiliPlus/utils/storage_path_resolver.dart';
+import 'package:PiliPlus/utils/storage_volume.dart';
 import 'package:PiliPlus/utils/update.dart';
 import 'package:PiliPlus/utils/utils.dart';
 import 'package:file_picker/file_picker.dart';
@@ -70,6 +74,14 @@ List<SettingsModel> get extraSettings => [
       getSubtitle: () => downloadPath,
       leading: const Icon(Icons.storage),
       onTap: _showDownPathDialog,
+    ),
+  ],
+  if (Platform.isAndroid) ...[
+    NormalModel(
+      title: '缓存位置',
+      getSubtitle: () => _androidCacheLocationSubtitle(),
+      leading: const Icon(Icons.sd_storage),
+      onTap: _showAndroidStoragePicker,
     ),
   ],
   SplitModel(
@@ -751,6 +763,135 @@ void _showDownPathDialog(BuildContext context, VoidCallback setState) {
       ],
     ),
   );
+}
+
+String _androidCacheLocationSubtitle() {
+  final p = Pref.downloadPath;
+  if (p == null || p.isEmpty) return '未选择（使用 app 私有目录，卸载会删）';
+  return p;
+}
+
+void _showAndroidStoragePicker(BuildContext context, VoidCallback setState) async {
+  final granted = await StorageLocation.isManageExternalStorageGranted;
+  if (!granted) {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('需要「所有文件访问」权限'),
+        content: const Text('为把缓存视频存到公共目录（卸载不删、可选 SD 卡），需要授权一次「所有文件访问」。仅用于缓存视频，不会读取其他文件。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('取消')),
+          TextButton(onPressed: () => Navigator.pop(c, true), child: const Text('去授权')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final res = await StorageLocation.requestManageExternalStorage();
+    if (!res) {
+      SmartDialog.showToast('未授权，无法选择位置');
+      return;
+    }
+  }
+
+  final volumes = await StorageLocation.listVolumes();
+  if (volumes.isEmpty) {
+    SmartDialog.showToast('未找到可用存储');
+    return;
+  }
+
+  final chosen = await showDialog<StorageVolume>(
+    context: context,
+    builder: (c) => SimpleDialog(
+      title: const Text('选择缓存位置'),
+      children: volumes.map((v) {
+        return SimpleDialogOption(
+          onPressed: () => Navigator.pop(c, v),
+          child: ListTile(
+            leading: Icon(v.isRemovable ? Icons.sd_card : Icons.phone_android),
+            title: Text(v.name),
+            subtitle: Text('可用 ${v.availableLabel}'),
+          ),
+        );
+      }).toList(),
+    ),
+  );
+  if (chosen == null) return;
+
+  final newPath = StoragePathResolver.joinDownloadPath(chosen.path);
+  final oldPath = downloadPath;
+  final hasExisting = DownloadService.to.downloadList.isNotEmpty;
+
+  final migrate = hasExisting && oldPath != newPath
+      ? await showDialog<bool>(
+          context: context,
+          builder: (c) => AlertDialog(
+            title: const Text('移动已缓存视频？'),
+            content: Text('将 ${DownloadService.to.downloadList.length} 个已缓存视频从\n$oldPath\n移到\n$newPath？'),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('不搬')),
+              TextButton(onPressed: () => Navigator.pop(c, true), child: const Text('搬过去')),
+            ],
+          ),
+        )
+      : false;
+
+  final decision = MigrationDecision.decide(
+    oldPath: oldPath,
+    newPath: newPath,
+    hasExistingDownloads: hasExisting,
+    userWantsMigrate: migrate ?? false,
+  );
+
+  Pref.downloadPath = newPath;
+  downloadPath = newPath;
+
+  switch (decision.action) {
+    case MigrationAction.migrate:
+      await _migrateDownloads(oldPath, newPath);
+      final extra = Pref.extraScanPaths ?? [];
+      extra.remove(oldPath);
+      Pref.extraScanPaths = extra.isEmpty ? null : extra;
+      break;
+    case MigrationAction.keepAsExtraScan:
+      final extra = Pref.extraScanPaths ?? [];
+      if (!extra.contains(oldPath)) extra.add(oldPath);
+      Pref.extraScanPaths = extra;
+      break;
+    case MigrationAction.none:
+      break;
+  }
+
+  await DownloadService.to.initDownloadList();
+  setState();
+}
+
+Future<void> _migrateDownloads(String oldPath, String newPath) async {
+  final oldDir = Directory(oldPath);
+  if (!oldDir.existsSync()) return;
+  await Directory(newPath).create(recursive: true);
+  await for (final entity in oldDir.list()) {
+    if (entity is! Directory) continue;
+    final dest = Directory('${newPath}/${entity.uri.pathSegments.last}');
+    try {
+      // 同文件系统可直接 rename；跨存储 rename 抛异常时回退 copy
+      await entity.rename(dest.path);
+    } catch (_) {
+      await _copyDir(entity, dest);
+      await entity.delete(recursive: true);
+    }
+  }
+}
+
+Future<void> _copyDir(Directory src, Directory dest) async {
+  await dest.create(recursive: true);
+  await for (final e in src.list()) {
+    final target = '${dest.path}/${e.uri.pathSegments.last}';
+    if (e is Directory) {
+      await _copyDir(e, Directory(target));
+    } else if (e is File) {
+      await e.copy(target);
+    }
+  }
 }
 
 void _showDynDialog(BuildContext context) {
