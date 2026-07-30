@@ -843,22 +843,25 @@ void _showAndroidStoragePicker(BuildContext context, VoidCallback setState) asyn
       userWantsMigrate: migrate ?? false,
     );
 
-    Pref.downloadPath = newPath;
-    downloadPath = newPath;
-
     switch (decision.action) {
       case MigrationAction.migrate:
         await _migrateDownloads(oldPath, newPath);
+        Pref.downloadPath = newPath;
+        downloadPath = newPath;
         final extra = Pref.extraScanPaths ?? [];
         extra.remove(oldPath);
         Pref.extraScanPaths = extra.isEmpty ? null : extra;
         break;
       case MigrationAction.keepAsExtraScan:
+        Pref.downloadPath = newPath;
+        downloadPath = newPath;
         final extra = Pref.extraScanPaths ?? [];
         if (!extra.contains(oldPath)) extra.add(oldPath);
         Pref.extraScanPaths = extra;
         break;
       case MigrationAction.none:
+        Pref.downloadPath = newPath;
+        downloadPath = newPath;
         break;
     }
 
