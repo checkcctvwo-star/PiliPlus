@@ -820,14 +820,14 @@ void _showAndroidStoragePicker(BuildContext context, VoidCallback setState) asyn
 
     final newPath = StoragePathResolver.joinDownloadPath(chosen.path);
     final oldPath = downloadPath;
-    final hasExisting = DownloadService.to.downloadList.isNotEmpty;
+    final hasExisting = Get.find<DownloadService>().downloadList.isNotEmpty;
 
     final migrate = hasExisting && oldPath != newPath
         ? await showDialog<bool>(
             context: context,
             builder: (c) => AlertDialog(
               title: const Text('移动已缓存视频？'),
-              content: Text('将 ${DownloadService.to.downloadList.length} 个已缓存视频从\n$oldPath\n移到\n$newPath？'),
+              content: Text('将 ${Get.find<DownloadService>().downloadList.length} 个已缓存视频从\n$oldPath\n移到\n$newPath？'),
               actions: [
                 TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('不搬')),
                 TextButton(onPressed: () => Navigator.pop(c, true), child: const Text('搬过去')),
@@ -862,7 +862,7 @@ void _showAndroidStoragePicker(BuildContext context, VoidCallback setState) asyn
         break;
     }
 
-    await DownloadService.to.initDownloadList();
+    await Get.find<DownloadService>().initDownloadList();
     setState();
   } catch (e) {
     SmartDialog.showToast('操作失败: $e');
