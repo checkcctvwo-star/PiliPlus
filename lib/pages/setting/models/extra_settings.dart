@@ -845,7 +845,12 @@ void _showAndroidStoragePicker(BuildContext context, VoidCallback setState) asyn
 
     switch (decision.action) {
       case MigrationAction.migrate:
-        await _migrateDownloads(oldPath, newPath);
+        final ok = await _migrateWithProgress(oldPath, newPath, context);
+        if (!ok) {
+          // 取消或失败：保持原位置，不切换、不重扫
+          SmartDialog.showToast('已取消迁移，保持原位置');
+          return;
+        }
         Pref.downloadPath = newPath;
         downloadPath = newPath;
         final extra = Pref.extraScanPaths ?? [];
@@ -874,33 +879,168 @@ void _showAndroidStoragePicker(BuildContext context, VoidCallback setState) asyn
   }
 }
 
-Future<void> _migrateDownloads(String oldPath, String newPath) async {
+/// 两阶段迁移（带进度 + 取消）：先全部拷贝，全部成功后才删源。
+/// 取消或失败时源文件完整保留、清理目标半拷贝。
+/// 返回 true=完成；false=取消或失败。
+Future<bool> _migrateWithProgress(
+  String oldPath,
+  String newPath,
+  BuildContext context,
+) async {
   final oldDir = Directory(oldPath);
-  if (!oldDir.existsSync()) return;
+  if (!oldDir.existsSync()) return true;
   await Directory(newPath).create(recursive: true);
-  await for (final entity in oldDir.list()) {
-    if (entity is! Directory) continue;
-    final dest = Directory('${newPath}/${entity.uri.pathSegments.last}');
-    try {
-      // 同文件系统可直接 rename；跨存储 rename 抛异常时回退 copy
-      await entity.rename(dest.path);
-    } catch (_) {
-      await _copyDir(entity, dest);
-      await entity.delete(recursive: true);
+
+  final folders = <Directory>[];
+  int totalBytes = 0;
+  await for (final e in oldDir.list()) {
+    if (e is Directory) {
+      folders.add(e);
+      totalBytes += await _dirSize(e);
+    }
+  }
+  if (folders.isEmpty) return true;
+
+  final copied = ValueNotifier<int>(0);
+  bool canceled = false;
+
+  // 模态进度对话框：阻塞 UI，迁移期间无法点别处/再开一次迁移
+  showDialog<void>(
+    context: context,
+    barrierDismissible: false,
+    useRootNavigator: true,
+    builder: (ctx) => PopScope(
+      canPop: false,
+      child: AlertDialog(
+        title: const Text('正在迁移缓存视频'),
+        content: ValueListenableBuilder<int>(
+          valueListenable: copied,
+          builder: (_, value, __) {
+            final ratio = totalBytes > 0
+                ? (value / totalBytes).clamp(0.0, 1.0)
+                : null;
+            final pct = totalBytes > 0
+                ? (value / totalBytes * 100).clamp(0, 100).toInt()
+                : 0;
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                LinearProgressIndicator(value: ratio),
+                const SizedBox(height: 12),
+                Text('$pct%  ·  ${formatBytes(value)} / ${formatBytes(totalBytes)}'),
+                const SizedBox(height: 8),
+                const Text(
+                  '迁移完成自动关闭，请勿离开或切换位置',
+                  style: TextStyle(fontSize: 12),
+                ),
+              ],
+            );
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => canceled = true,
+            child: const Text('取消'),
+          ),
+        ],
+      ),
+    ),
+  );
+
+  String basename(String p) =>
+      p.split('/').where((s) => s.isNotEmpty).last;
+
+  // Phase 1: 全部拷贝（带进度 + 取消检查）
+  bool ok = true;
+  try {
+    for (final folder in folders) {
+      if (canceled) {
+        ok = false;
+        break;
+      }
+      final dest = Directory('${newPath}/${basename(folder.path)}');
+      await _copyDirWithProgress(
+        folder,
+        dest,
+        (b) => copied.value += b,
+        () => canceled,
+      );
+    }
+  } catch (_) {
+    ok = false;
+  }
+
+  // Phase 2: 全部成功才删源；否则清理目标半拷贝（源完整保留）
+  if (ok) {
+    for (final folder in folders) {
+      try {
+        await folder.delete(recursive: true);
+      } catch (_) {}
+    }
+  } else {
+    for (final folder in folders) {
+      final dest = Directory('${newPath}/${basename(folder.path)}');
+      try {
+        if (dest.existsSync()) await dest.delete(recursive: true);
+      } catch (_) {}
+    }
+  }
+
+  if (context.mounted) Navigator.of(context, rootNavigator: true).pop();
+  copied.dispose();
+  return ok;
+}
+
+Future<void> _copyDirWithProgress(
+  Directory src,
+  Directory dest,
+  void Function(int) onBytes,
+  bool Function() isCanceled,
+) async {
+  await dest.create(recursive: true);
+  await for (final e in src.list()) {
+    if (isCanceled()) return;
+    final name = e.uri.pathSegments.where((s) => s.isNotEmpty).last;
+    final target = '${dest.path}/$name';
+    if (e is Directory) {
+      await _copyDirWithProgress(e, Directory(target), onBytes, isCanceled);
+    } else if (e is File) {
+      await _copyFileWithProgress(e, target, onBytes, isCanceled);
     }
   }
 }
 
-Future<void> _copyDir(Directory src, Directory dest) async {
-  await dest.create(recursive: true);
-  await for (final e in src.list()) {
-    final target = '${dest.path}/${e.uri.pathSegments.last}';
-    if (e is Directory) {
-      await _copyDir(e, Directory(target));
-    } else if (e is File) {
-      await e.copy(target);
+Future<void> _copyFileWithProgress(
+  File src,
+  String destPath,
+  void Function(int) onBytes,
+  bool Function() isCanceled,
+) async {
+  final output = File(destPath).openWrite();
+  try {
+    await for (final chunk in src.openRead()) {
+      if (isCanceled()) break;
+      output.add(chunk);
+      onBytes(chunk.length);
     }
+    await output.flush();
+  } finally {
+    await output.close();
   }
+}
+
+Future<int> _dirSize(Directory dir) async {
+  int size = 0;
+  try {
+    await for (final e in dir.list()) {
+      if (e is File) {
+        size += await e.length();
+      } else if (e is Directory) {
+        size += await _dirSize(e);
+      }
+    }
+  } catch (_) {}
+  return size;
 }
 
 void _showDynDialog(BuildContext context) {
