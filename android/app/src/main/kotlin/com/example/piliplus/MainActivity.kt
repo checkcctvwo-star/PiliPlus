@@ -6,10 +6,13 @@ import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager.LayoutParams
 import com.ryanheise.audioservice.AudioServiceActivity
+import android.content.Context
+import android.os.Environment
 import android.os.StatFs
+import android.os.storage.StorageManager
+import android.os.storage.StorageVolume
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
-import java.io.File
 
 class MainActivity : AudioServiceActivity() {
     private val channelName = "piliplus/storage"
@@ -26,35 +29,66 @@ class MainActivity : AudioServiceActivity() {
     }
 
     private fun getStorageVolumes(): List<Map<String, Any>> {
-        // 列 /storage 下挂载点（MANAGE_EXTERNAL_STORAGE 授权后可访问，跨 API 版本稳定，
-        // 避免 StorageManager.getStorageVolumes()(API29+)/getDescription()(API30+) 的版本依赖）
         val results = mutableListOf<Map<String, Any>>()
-        val storage = File("/storage")
-        if (!storage.exists()) return results
-        storage.listFiles()?.forEach { dir ->
-            if (!dir.isDirectory) return@forEach
-            // /storage/emulated -> 内置存储主用户 /storage/emulated/0
-            // /storage/XXXX-XXXX -> 外置 SD 卡
-            val actualPath = if (dir.name == "emulated") {
-                File("/storage/emulated/0").path
-            } else {
-                dir.path
+        // 始终加入主内置存储（Environment API 全版本可用；MANAGE_EXTERNAL_STORAGE 授权后 StatFs 可读）
+        val primary = Environment.getExternalStorageDirectory().absolutePath
+        addVolume(results, primary, "内置存储", false)
+
+        // API 29+：用 StorageManager 枚举所有卷（含外置 SD 卡）
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val sm = getSystemService(Context.STORAGE_SERVICE) as StorageManager
+            for (vol in sm.storageVolumes) {
+                val path = volumePath(vol) ?: continue
+                if (path == primary) continue // 跳过已加入的主存储
+                val removable = vol.isRemovable
+                addVolume(results, path, volumeName(vol, removable), removable)
             }
-            val isRemovable = dir.name != "emulated"
-            try {
-                val stat = StatFs(actualPath)
-                results.add(
-                    mapOf(
-                        "path" to actualPath,
-                        "name" to if (isRemovable) "SD 卡" else "内置存储",
-                        "isRemovable" to isRemovable,
-                        "totalBytes" to stat.totalBytes,
-                        "availableBytes" to stat.availableBytes,
-                    ),
-                )
-            } catch (_: Exception) {}
         }
         return results
+    }
+
+    private fun addVolume(
+        results: MutableList<Map<String, Any>>,
+        path: String,
+        name: String,
+        isRemovable: Boolean,
+    ) {
+        try {
+            val stat = StatFs(path)
+            results.add(
+                mapOf(
+                    "path" to path,
+                    "name" to name,
+                    "isRemovable" to isRemovable,
+                    "totalBytes" to stat.totalBytes,
+                    "availableBytes" to stat.availableBytes,
+                ),
+            )
+        } catch (_: Exception) {}
+    }
+
+    private fun volumePath(vol: StorageVolume): String? {
+        // API 30+: getDirectory()；低版本反射 getPath()
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            vol.directory?.absolutePath
+        } else {
+            try {
+                vol.javaClass.getMethod("getPath").invoke(vol) as? String
+            } catch (_: Exception) {
+                null
+            }
+        }
+    }
+
+    private fun volumeName(vol: StorageVolume, isRemovable: Boolean): String {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            return try {
+                vol.getDescription(this).toString()
+            } catch (_: Exception) {
+                if (isRemovable) "SD 卡" else "内置存储"
+            }
+        }
+        return if (isRemovable) "SD 卡" else "内置存储"
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
