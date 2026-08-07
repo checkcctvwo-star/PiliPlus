@@ -22,7 +22,6 @@ import 'package:PiliPlus/utils/extension/theme_ext.dart';
 import 'package:PiliPlus/utils/json_file_handler.dart';
 import 'package:PiliPlus/utils/max_screen_size.dart';
 import 'package:PiliPlus/utils/path_utils.dart';
-import 'package:PiliPlus/utils/permission_handler.dart';
 import 'package:PiliPlus/utils/platform_utils.dart';
 import 'package:PiliPlus/utils/request_utils.dart';
 import 'package:PiliPlus/utils/storage.dart';
@@ -78,9 +77,8 @@ Future<void> _initDownPath() async {
         ? path.join(externalStorageDirPath, PathUtils.downloadDir)
         : defDownloadPath;
     final customDownPath = Pref.downloadPath;
-    final granted = await Permission.manageExternalStorage.isGranted;
     bool accessible = false;
-    if (customDownPath != null && customDownPath.isNotEmpty && granted) {
+    if (customDownPath != null && customDownPath.isNotEmpty) {
       try {
         final dir = Directory(customDownPath);
         if (!dir.existsSync()) {
@@ -93,7 +91,6 @@ Future<void> _initDownPath() async {
     }
     downloadPath = StoragePathResolver.resolve(
       customPath: customDownPath,
-      permissionGranted: granted,
       customPathAccessible: accessible,
       fallbackPath: fallback,
     );

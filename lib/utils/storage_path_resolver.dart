@@ -6,13 +6,11 @@ abstract final class StoragePathResolver {
 
   static String resolve({
     required String? customPath,
-    required bool permissionGranted,
     required bool customPathAccessible,
     required String fallbackPath,
   }) {
     if (customPath != null &&
         customPath.isNotEmpty &&
-        permissionGranted &&
         customPathAccessible) {
       return customPath;
     }

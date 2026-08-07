@@ -21,7 +21,8 @@ import 'package:PiliPlus/utils/extension/file_ext.dart';
 import 'package:PiliPlus/utils/extension/string_ext.dart';
 import 'package:PiliPlus/utils/id_utils.dart';
 import 'package:PiliPlus/utils/path_utils.dart';
-import 'package:PiliPlus/utils/download_dedup.dart';
+import 'package:PiliPlus/utils/download_scan.dart';
+import 'package:PiliPlus/utils/download_scan_paths.dart';
 import 'package:PiliPlus/utils/storage_pref.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
@@ -69,9 +70,12 @@ class DownloadService extends GetxService {
 
   Future<void> _readDownloadList() async {
     downloadList.clear();
-    final paths = <String>[await _getDownloadPath()];
-    final extra = Pref.extraScanPaths;
-    if (extra != null) paths.addAll(extra);
+    waitDownloadQueue.clear();
+    final paths = DownloadScanPaths.compute(
+      resolvedDownloadPath: await _getDownloadPath(),
+      customPath: Pref.downloadPath,
+      extraScanPaths: Pref.extraScanPaths,
+    );
     final all = <BiliDownloadEntryInfo>[];
     for (final p in paths) {
       final dir = Directory(p);
@@ -84,7 +88,15 @@ class DownloadService extends GetxService {
         }
       } catch (_) {}
     }
-    downloadList.addAll(dedupeByCid(all, (e) => e.cid));
+    final deduped = DownloadScan.dedup<BiliDownloadEntryInfo>(
+      all,
+      cidOf: (e) => e.cid,
+      isCompletedOf: (e) => e.isCompleted,
+    );
+    downloadList.addAll(deduped.completed);
+    for (final e in deduped.incomplete) {
+      waitDownloadQueue.add(e..status = DownloadStatus.wait);
+    }
     downloadList.sort((a, b) => b.timeUpdateStamp.compareTo(a.timeUpdateStamp));
   }
 
@@ -107,11 +119,7 @@ class DownloadService extends GetxService {
             final entry = BiliDownloadEntryInfo.fromJson(jsonDecode(entryJson))
               ..pageDirPath = pageDir.path
               ..entryDirPath = entryDir.path;
-            if (entry.isCompleted) {
-              result.add(entry);
-            } else {
-              waitDownloadQueue.add(entry..status = DownloadStatus.wait);
-            }
+            result.add(entry);
           } catch (_) {}
         }
       }
