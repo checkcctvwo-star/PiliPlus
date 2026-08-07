@@ -1,6 +1,8 @@
 name: Build Debug APK (cloud)
 
 on:
+  push:
+    branches: [feat/cache-storage-location]
   workflow_dispatch:
 
 jobs:
