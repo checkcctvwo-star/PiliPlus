@@ -141,7 +141,7 @@ class _UgcIntroPanelState extends State<UgcIntroPanel> {
                     ..._infos(videoDetail)
                   else
                     Obx(
-                      () => AnimatedHeight(
+                      () => AnimatedHeightWidgetExt(
                         expand: introController.expand.value,
                         duration: const Duration(milliseconds: 300),
                         child: TranslucentColumn(
@@ -712,7 +712,7 @@ class _UgcIntroPanelState extends State<UgcIntroPanel> {
           Expanded(
             child: SingleChildScrollView(
               scrollDirection: .horizontal,
-              hitTestBehavior: .deferToChild,
+              hitTestBehavior: .translucent,
               physics: ReloadScrollPhysics(controller: introController),
               child: Row(
                 spacing: 25,
